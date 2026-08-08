@@ -1,0 +1,37 @@
+# Build
+build/
+cmake-build-*/
+*.user
+*.autosave
+
+# Qt
+*.pro.user
+*.qmlc
+*.jsc
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# License files (local)
+*.lic
+firstrun.dat
+
+# Android
+android/bin/
+android/libs/
+android/local.properties
+android/gradle/
+android/.gradle/
+
+# Secrets - never commit real production salt
+# (change SECRET_SALT in LicenseKey.cpp before release)
