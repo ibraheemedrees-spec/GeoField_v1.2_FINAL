@@ -1,0 +1,102 @@
+# Geo Field – Build Action
+name: Build Geo Field
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  QT_VERSION: "6.7.2"
+  BUILD_TYPE: Release
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt (MSVC)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2019_64
+          modules: "qtpositioning qtserialport"
+          cache: true
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure CMake
+        shell: cmd
+        run: |
+          mkdir build
+          cd build
+          cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_PREFIX_PATH=%QT_ROOT_DIR% -DCMAKE_CXX_COMPILER=cl
+
+      - name: Build
+        shell: cmd
+        run: |
+          cd build
+          cmake --build . --config %BUILD_TYPE%
+
+      - name: Deploy Qt DLLs
+        shell: cmd
+        run: |
+          cd build
+          dir /s /b *.exe
+          if exist bin\GeoField.exe (
+            windeployqt --qmldir ../resources/qml bin\GeoField.exe
+          ) else (
+            for /r %%i in (GeoField*.exe) do windeployqt --qmldir ../resources/qml "%%i"
+          )
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeoField-Windows
+          path: |
+            build/bin/**
+            build/**/*.exe
+            build/**/*.dll
+          if-no-files-found: warn
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build \
+            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev \
+            libdbus-1-dev libxcb-cursor0
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: "qtpositioning qtserialport"
+          cache: true
+
+      - name: Configure & Build
+        run: |
+          mkdir -p build && cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}"
+          cmake --build .
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeoField-Linux
+          path: |
+            build/bin/**
+            build/GeoField*
+          if-no-files-found: warn
