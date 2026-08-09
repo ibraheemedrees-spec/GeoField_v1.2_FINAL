@@ -1,0 +1,230 @@
+# Geo Field – Build Action (Windows + Linux + Android)
+name: Build Geo Field
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  QT_VERSION: "6.7.2"
+  BUILD_TYPE: Release
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt (MSVC)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2019_64
+          modules: "qtpositioning qtserialport"
+          cache: true
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure CMake
+        shell: cmd
+        run: |
+          mkdir build
+          cd build
+          cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_PREFIX_PATH=%QT_ROOT_DIR% -DCMAKE_CXX_COMPILER=cl
+
+      - name: Build
+        shell: cmd
+        run: |
+          cd build
+          cmake --build . --config %BUILD_TYPE%
+
+      - name: Deploy Qt DLLs
+        shell: cmd
+        run: |
+          cd build
+          dir /s /b *.exe
+          if exist bin\GeoField.exe (
+            windeployqt --qmldir ../resources/qml bin\GeoField.exe
+          ) else (
+            for /r %%i in (GeoField*.exe) do windeployqt --qmldir ../resources/qml "%%i"
+          )
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeoField-Windows
+          path: |
+            build/bin/**
+            build/**/*.exe
+            build/**/*.dll
+          if-no-files-found: warn
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build \
+            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev \
+            libdbus-1-dev libxcb-cursor0
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: "qtpositioning qtserialport"
+          cache: true
+
+      - name: Configure & Build
+        run: |
+          mkdir -p build && cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}"
+          cmake --build .
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeoField-Linux
+          path: |
+            build/bin/**
+            build/GeoField*
+          if-no-files-found: warn
+
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages (API 34 only)
+        run: |
+          # Use stable API 34 – avoid broken android-36-ext* jars on runners
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager --install "ndk;26.1.10909125"
+
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "ANDROID_PLATFORM=android-34" >> $GITHUB_ENV
+
+          echo "Installed platforms:"
+          ls "$ANDROID_SDK_ROOT/platforms" || true
+
+      - name: Install Qt for Android
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: android
+          arch: android_arm64_v8a
+          modules: "qtpositioning qtserialport"
+          cache: true
+
+      - name: Configure CMake (Android)
+        run: |
+          echo "QT_ROOT_DIR=$QT_ROOT_DIR"
+          echo "QT_HOST_PATH=$QT_HOST_PATH"
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          echo "ANDROID_PLATFORM=$ANDROID_PLATFORM"
+
+          mkdir -p build-android
+          cd build-android
+
+          TOOLCHAIN="${QT_ROOT_DIR}/lib/cmake/Qt6/qt.toolchain.cmake"
+          cmake .. -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+            -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" \
+            -DQT_HOST_PATH="${QT_HOST_PATH}" \
+            -DANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
+            -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}" \
+            -DQT_ANDROID_ABIS="arm64-v8a" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-34 \
+            -DANDROID_NATIVE_API_LEVEL=28
+
+      - name: Force android-34 in deployment settings
+        run: |
+          cd build-android
+          # Patch any generated deployment JSON to use android-34
+          for f in android-*-deployment-settings.json; do
+            if [ -f "$f" ]; then
+              echo "Patching $f"
+              sed -i 's/"android-platform"[[:space:]]*:[[:space:]]*"[^"]*"/"android-platform": "android-34"/g' "$f" || true
+              sed -i 's/android-3[0-9][^"]*/android-34/g' "$f" || true
+              cat "$f" | head -80
+            fi
+          done
+
+      - name: Build native library
+        run: |
+          cd build-android
+          cmake --build . --parallel --target GeoField
+
+      - name: Package APK with androiddeployqt (platform 34)
+        run: |
+          cd build-android
+
+          # Locate androiddeployqt (host tools)
+          DEPLOYQT=$(command -v androiddeployqt || true)
+          if [ -z "$DEPLOYQT" ]; then
+            DEPLOYQT="${QT_HOST_PATH}/bin/androiddeployqt"
+          fi
+          if [ ! -x "$DEPLOYQT" ]; then
+            DEPLOYQT="${QT_ROOT_DIR}/../gcc_64/bin/androiddeployqt"
+          fi
+          echo "androiddeployqt: $DEPLOYQT"
+
+          INPUT=$(ls android-*-deployment-settings.json | head -1)
+          echo "Input: $INPUT"
+
+          # Ensure libs folder
+          mkdir -p android-build/libs/arm64-v8a
+          if [ -f bin/libGeoField_arm64-v8a.so ]; then
+            cp -f bin/libGeoField_arm64-v8a.so android-build/libs/arm64-v8a/
+          fi
+
+          "$DEPLOYQT" \
+            --input "$INPUT" \
+            --output android-build \
+            --android-platform android-34 \
+            --jdk "$JAVA_HOME" \
+            --gradle \
+            --release \
+            --apk android-build/GeoField.apk
+
+          echo "==== APK outputs ===="
+          find . -name "*.apk" -o -name "*.aab" | head -20
+
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeoField-Android
+          path: |
+            build-android/**/*.apk
+            build-android/**/*.aab
+            build-android/android-build/**/*.apk
+            build-android/bin/**/*.so
+          if-no-files-found: warn
